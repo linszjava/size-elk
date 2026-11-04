@@ -46,11 +46,12 @@ services:
   elastic-agent:
     image: docker.elastic.co/elastic-agent/elastic-agent:9.5.3
     user: "0:0"
+    command: ["-c", "/etc/elastic-agent/elastic-agent.yml"]
     environment:
       FLEET_ENROLL: "0"
       STATE_PATH: /usr/share/elastic-agent/state
     volumes:
-      - ./elastic-agent.yml:/usr/share/elastic-agent/elastic-agent.yml:ro
+      - ./elastic-agent.yml:/etc/elastic-agent/elastic-agent.yml:ro
       - ../logs:/logs:ro
       - agent-state:/usr/share/elastic-agent/state
     depends_on:

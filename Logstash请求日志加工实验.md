@@ -95,6 +95,8 @@ outputs:
       - logstash:5044
 ```
 
+Agent 在 Compose 中通过 `command: ["-c", "/etc/elastic-agent/elastic-agent.yml"]` 显式读取挂载的配置。这样即使状态卷保留了旧的直连 ES 配置，也不会覆盖本次配置；无需删除采集进度。
+
 Logstash 的 `requests.conf` 包含三段：`input` 在 5044 接收 Agent 数据，`filter` 执行第 2 节的规则，`output` 发到 `http://elasticsearch:9200`。5044 是采集协议端口，不是 HTTP 页面，不需要映射到 Mac。
 
 数据仍写入 `logs-demo.microservices-local`。Agent 的日志挂载是 `../logs:/logs:ro`；三个 Java 服务从 size-elk 根目录启动，继续使用已有 `./logs/<服务名>.json` 配置。
