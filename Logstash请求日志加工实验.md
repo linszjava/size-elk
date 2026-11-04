@@ -63,23 +63,29 @@ Java 服务 → 项目 logs 文件夹 → Elastic Agent（Filebeat）
 
 此处 outcome 是按“网关请求是否成功”的业务口径定义。404 不会被改成 ERROR，Logstash 也不会凭空生成异常原因。
 
-## 3 配置文件已经准备好
+## 3 完整搭建配置
 
-在项目 `elastic-local` 中新增以下文件：
+v-1.2 只使用一套配置，默认通过 Logstash 写入 ES：
 
 ```text
-elastic-local/
-├── compose.yml                     原来的基础配置
-├── elastic-agent.yml               原来的 Agent 直连 ES 配置
-├── compose.logstash.yml             新增 Logstash 并替换 Agent 配置挂载
-├── elastic-agent.logstash.yml       Agent 改为发送到 Logstash
-├── compose-logstash.sh              固定加载两份 Compose 的命令入口
-└── logstash/pipeline/requests.conf  Logstash 处理规则
+size-elk/
+├── logs/                              Java 服务写日志
+└── elastic-local/
+    ├── compose.yml                    一次启动四个组件
+    ├── elastic-agent.yml              读取文件，发送到 Logstash
+    └── logstash/pipeline/requests.conf 接收、加工、发送到 ES
 ```
 
-`requests.conf` 分为三段：`input` 接收 Agent 的数据；`filter` 加工字段；`output` 写入 ES。完整规则直接打开该文件查看。
+四个组件统一使用 9.5.3。打开项目中的文件即可查看完整配置，不需要合并 Compose，也不需要额外启动脚本。
 
-新的 Agent 输出配置为：
+| 服务 | 作用 | 地址 |
+|---|---|---|
+| elasticsearch | 保存加工后的日志 | Mac 访问 http://localhost:9200 |
+| kibana | 查询与展示 | 浏览器访问 http://localhost:5601 |
+| logstash | 补充字段、转换耗时、分类请求 | Docker 内网 logstash:5044 |
+| elastic-agent | 读取项目 logs 下的 JSON 文件 | 无需浏览器访问 |
+
+Agent 的输出固定为：
 
 ```yaml
 outputs:
@@ -89,55 +95,61 @@ outputs:
       - logstash:5044
 ```
 
-`5044` 是采集协议端口，不是网页地址。本实验不把它暴露到 Mac，只在 Compose 网络中通信。数据仍写入 `logs-demo.microservices-local`，Kibana 原来的 Data View 可以继续使用。
+Logstash 的 `requests.conf` 包含三段：`input` 在 5044 接收 Agent 数据，`filter` 执行第 2 节的规则，`output` 发到 `http://elasticsearch:9200`。5044 是采集协议端口，不是 HTTP 页面，不需要映射到 Mac。
 
-这里使用自定义 filestream 数据集，保留 Agent 原有字段；若以后接入依赖 ingest pipeline 的官方 Integration，需按该 Integration 的要求处理，不能直接套用任意字段改写规则。[Agent 输出说明](https://www.elastic.co/docs/reference/fleet/logstash-output)
+数据仍写入 `logs-demo.microservices-local`。Agent 的日志挂载是 `../logs:/logs:ro`；三个 Java 服务从 size-elk 根目录启动，继续使用已有 `./logs/<服务名>.json` 配置。
 
-## 4 下载并检查 Logstash
+本实验使用自定义 filestream 数据集，并保留原有字段。以后使用依赖 ingest pipeline 的官方 Integration 时，需遵循该 Integration 的处理要求。[Agent 输出说明](https://www.elastic.co/docs/reference/fleet/logstash-output)
 
-打开 Docker Desktop，在终端执行：
+## 4 下载并启动整套环境
+
+前提：Docker Desktop 已运行，Nacos 和三个 Java 服务使用现有配置。本节只搭建 ES、Kibana、Logstash、Agent；确保 Docker 有足够可用内存，建议为整套本地实验分配约 8 GB。
+
+### 下载镜像并检查配置
 
 ```bash
 cd /Volumes/ulinsz/chatgpt-projects/size-elk/elastic-local
-bash compose-logstash.sh config -q
-bash compose-logstash.sh pull logstash
+mkdir -p ../logs
+docker compose config -q
+docker compose pull
 ```
 
-然后使用一次性容器检查管道语法，不启动业务链路：
+检查 Logstash 管道语法：
 
 ```bash
-bash compose-logstash.sh run --rm --no-deps logstash \
+docker compose run --rm --no-deps logstash \
   bin/logstash --config.test_and_exit -f /usr/share/logstash/pipeline/requests.conf
 ```
 
-看到 `Configuration OK` 且命令成功退出后，再继续。这个检查验证配置语法，不代表已经连接 ES 或收到了日志。
+看到 `Configuration OK` 且命令成功退出后继续。它只验证配置语法，不证明已经采集到日志。
 
-## 5 启动 Logstash 并切换 Agent
-
-先启动 Logstash，现有 Agent 此时仍直连 ES：
+### 启动四个组件
 
 ```bash
-bash compose-logstash.sh up -d logstash
-bash compose-logstash.sh logs -f logstash
+docker compose up -d --force-recreate
+docker compose ps
+docker compose logs --tail=100 logstash elastic-agent
 ```
 
-等待日志出现 `Pipeline started`、监听 5044 的信息，并确认没有持续报错。按 `Ctrl+C` 退出日志查看，不会停止容器。
+`--force-recreate` 确保之前已运行的容器也重新读取本版本配置。它会重建容器，但保留命名数据卷；已运行的 ES、Kibana 会短暂重启。全新搭建也可直接使用这条命令。
 
-再重新创建 Agent，让它读取新配置：
+Compose 先等待 ES 健康，再启动相关组件。Agent 在 Logstash 容器启动后启动，Logstash 的内部管道就绪仍需时间，期间短暂连接失败会重试。不要仅凭容器显示 running 判断完成。
+
+成功标志：
+
+1. `docker compose ps` 中四个服务都在运行，ES 显示 healthy。
+2. Logstash 日志出现 `Pipeline started` 及监听 5044 的信息，没有持续报错。
+3. 下面的 ES 请求返回版本 JSON；浏览器能打开 Kibana。
 
 ```bash
-bash compose-logstash.sh up -d --no-deps --force-recreate elastic-agent
-bash compose-logstash.sh ps
-bash compose-logstash.sh logs --tail=80 elastic-agent logstash
+curl -fsS http://localhost:9200
 ```
 
-这里是替换同一个 Agent 服务，沿用相同的日志目录、input ID 和 `agent-state` 卷。不要再额外启动另一个 Agent，否则可能重复采集。
+Kibana 地址：[http://localhost:5601](http://localhost:5601)。本地配置无密码，仅绑定本机端口。
 
-已有日志通常不会重新采集，ES 中的历史记录也不会自动增加新字段。下面要重新发送请求验证。投递重试仍可能导致少量重复记录，不应把本实验视为严格 exactly-once 系统。
+已有 ES 数据和 Agent 采集进度会保留，历史日志不会自动增加新字段。接下来必须发起新请求来验证 Logstash。
 
-启用该方案后，日常启动使用 `bash compose-logstash.sh up -d`，避免单独使用基础 Compose 把 Agent 切回直连 ES。
-
-## 6 发送成功与失败请求
+## 5 发送成功与失败请求
 
 确保网关、订单、库存三个服务已运行并注册到 Nacos。生成本轮唯一编号，连续测试 10 轮：
 
@@ -156,7 +168,7 @@ printf '本轮查询前缀：%s\n' "$RUN_ID"
 
 预期：1001 返回 200，1003 返回 404。多次请求也能让新日志文件超过采集指纹长度门槛。等待约 10～30 秒后查看 Kibana。
 
-## 7 在 Kibana 证明 Logstash 生效
+## 6 在 Kibana 证明 Logstash 生效
 
 打开 Discover，选择原来的 Data View，时间范围设为最近 15 分钟。清除之前的 requestId、INFO 等筛选。
 
@@ -196,7 +208,7 @@ requestId : "ls-lab-实际编号-missing-1"
 
 同一请求的原始本地 JSON 中没有 processing_pipeline 标记，而 ES 中有，就能直观看到 Logstash 对数据的加工。它不会回写修改本地日志文件。
 
-## 8 可选做一张请求结果图
+## 7 可选做一张请求结果图
 
 在 Kibana 的 Lens 中选择相同 Data View，筛选：
 
@@ -206,35 +218,45 @@ labels.processing_pipeline : "logstash_requests_v1" AND event.action : "gateway_
 
 选择柱状图，横轴用 `@timestamp` 时间直方图，纵轴用记录数，按 `event.outcome` 拆分颜色，保存为“网关请求结果”。只统计完成日志，避免把一次请求的多条日志都算成请求次数。
 
-若只看本轮，可以继续加 `requestId : "本轮完整前缀"*` 对应的前缀筛选，或使用界面字段过滤。本轮无重试、无其他请求时，预期为成功 10 次、失败 10 次；有重复投递时应按 requestId 去重再统计。
+若只看本轮，可进一步缩小时间范围或通过 requestId 字段筛选。本轮无重试、无其他请求时，预期为成功 10 次、失败 10 次；有重复投递时应按 requestId 去重再统计。
 
-## 9 遇到问题和回退
+## 8 常用操作和排查
+
+所有命令都在 `elastic-local` 目录执行：
+
+```bash
+# 后续日常启动
+docker compose up -d
+
+# 停止并保留数据
+docker compose down
+
+# 查看日志
+docker compose logs --tail=150 elastic-agent logstash
+
+# 修改 Logstash 规则后应用
+docker compose restart logstash
+
+# 修改 Agent 配置后应用
+docker compose restart elastic-agent
+```
 
 | 现象 | 检查 |
 |---|---|
-| 旧日志没有新字段 | 正常；重新发送请求，查最新时间段 |
-| 新日志也没有标记 | 确认用 compose-logstash.sh 重建过 Agent，检查新配置挂载 |
-| Agent 提示 connection refused | 查看 Logstash 是否成功启动并监听 5044 |
-| Logstash 输出 400 或字段类型冲突 | 查看 Logstash 错误；本实验使用 ECS 字段类型，已有自定义冲突 mapping 需另行处理 |
-| 查不到任何日志 | 检查 Java 工作目录仍是 size-elk，日志是否写进项目 logs，确认时间范围 |
-| 容器退出 137 | 检查 Docker 内存是否足够 |
+| 旧日志没有新字段 | 正常；发送新请求，查最新时间段 |
+| Agent 提示 connection refused | 确认 Logstash 管道已启动并监听 5044 |
+| Logstash 报 400 或字段类型冲突 | 查看输出错误和已有 ES mapping |
+| 查不到日志 | 检查日志是否写入项目 logs、时间范围，以及采集器日志 |
+| 新环境没有 Data View | 创建 `logs-demo.microservices-*`，时间字段选 `@timestamp` |
+| 容器退出 137 | 检查 Docker 内存 |
 
-统一排查命令：
+不要删除 `agent-state` 卷或执行 `down -v`；前者会丢失采集进度，后者会删除此项目的数据卷。日志投递可能因重试重复，本实验不保证 exactly-once。Logstash 未启用持久化队列，不能据此保证故障时零数据丢失。
 
-```bash
-bash compose-logstash.sh ps
-bash compose-logstash.sh logs --tail=150 elastic-agent logstash
-```
+## 9 版本关系
 
-回到原来的 Agent 直连 ES 模式：
+- `v-1.1`：Agent 直接连接 ES，保留在 Git 分支中。
+- `v-1.2`：本指南的完整四组件方案，Agent 默认连接 Logstash。
 
-```bash
-docker compose -f compose.yml up -d --no-deps --force-recreate elastic-agent
-bash compose-logstash.sh stop logstash
-```
-
-这会保留 ES 数据和 Agent 采集进度。回退后新日志不再有 Logstash 添加的字段；历史加工记录仍在。不要执行 `down -v`。
-
-该配置使用 Docker 内网明文连接，供本机实验。没有配置持久化队列，不能据此保证强制中断或故障情况下零数据丢失。
+日常运行本版本不需要切换链路。若需要回到旧版本，先在当前版本执行 `docker compose down`，确认代码修改已保存，再从项目根目录执行 `git switch v-1.1`，进入 `elastic-local` 执行 `docker compose up -d`。两版使用相同项目名及已有 ES、Agent 数据卷；旧版无需启动 Logstash，历史加工记录仍可查询。
 
 参考：[Logstash Agent 输入](https://www.elastic.co/docs/reference/logstash/plugins/plugins-inputs-elastic_agent)、[ES 数据流输出](https://www.elastic.co/docs/reference/logstash/plugins/plugins-outputs-elasticsearch)、[Logstash 9.5.3 镜像](https://www.docker.elastic.co/r/logstash/logstash:9.5.3)。

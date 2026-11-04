@@ -1,8 +1,8 @@
 outputs:
   default:
-    type: elasticsearch
+    type: logstash
     hosts:
-      - http://elasticsearch:9200
+      - logstash:5044
 
 inputs:
   - id: microservices-files
