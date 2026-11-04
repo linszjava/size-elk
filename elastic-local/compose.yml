@@ -1,0 +1,50 @@
+name: elk-logs-local
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.5.3
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      SERVER_NAME: kibana
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  elastic-agent:
+    image: docker.elastic.co/elastic-agent/elastic-agent:9.5.3
+    user: "0:0"
+    environment:
+      FLEET_ENROLL: "0"
+      STATE_PATH: /usr/share/elastic-agent/state
+    volumes:
+      - ./elastic-agent.yml:/usr/share/elastic-agent/elastic-agent.yml:ro
+      - ../logs:/logs:ro
+      - agent-state:/usr/share/elastic-agent/state
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  es-data:
+  agent-state:
