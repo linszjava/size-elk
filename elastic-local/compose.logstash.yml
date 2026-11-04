@@ -1,0 +1,23 @@
+services:
+  logstash:
+    image: docker.elastic.co/logstash/logstash:9.5.3
+    environment:
+      LS_JAVA_OPTS: -Xms512m -Xmx512m
+      XPACK_MONITORING_ENABLED: "false"
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - logstash-data:/usr/share/logstash/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  elastic-agent:
+    volumes:
+      - ./elastic-agent.logstash.yml:/usr/share/elastic-agent/elastic-agent.yml:ro
+    depends_on:
+      logstash:
+        condition: service_started
+
+volumes:
+  logstash-data:
